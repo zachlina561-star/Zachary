@@ -1,40 +1,100 @@
 name: RDP
-# rdp by JoyWardanaa modifed
+
 on:
-workflow_dispatch:
+  workflow_dispatch:
+
 jobs:
-secure-rdp:
-runs-on: windows-latest
-timeout-minutes: 3600
-steps:
-- name: Configure Core RDP Settings By JoyWardanaa
-run: |
-Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-netsh advfirewall firewall delete rule name="RDP-Tailscale"
-netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-Restart-Service -Name TermService -Force
-- name: Create RDP User with Secure Password
-run: |
-$username = "JoyWardana"
-$password = "JoyDev@123"
-$securePass = ConvertTo-SecureString $password -AsPlainText -Force
-New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
-Add-LocalGroupMember -Group "Administrators" -Member $username
-Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
-echo "RDP_CREDS=User: $username | Password: $password" >> $env:GITHUB_ENV
-if (-not (Get-LocalUser -Name $username)) {
-exit 1
-}
-- name: Install Tailscale
-run: |
-$tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-$installerPath = "$env:TEMP\tailscale.msi"
-Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-Remove-Item $installerPath -Force
-- name: Establish Tailscale Connection
-run: |
-& "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-$tsIP = $nul
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure RDP
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" -Value 0 -Force
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" -Value 0 -Force
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "SecurityLayer" -Value 0 -Force
+
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User
+        shell: powershell
+        run: |
+          $username = "JoyWardana"
+          $password = "JoyDev@123"
+
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
+              Remove-LocalUser -Name $username
+          }
+
+          New-LocalUser -Name $username `
+            -Password $securePass `
+            -AccountNeverExpires
+
+          Add-LocalGroupMember -Group "Administrators" -Member $username
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
+
+          if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
+              Write-Error "Failed to create RDP user."
+              exit 1
+          }
+
+          "RDP_USER=$username" >> $env:GITHUB_ENV
+          "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+
+          Start-Process msiexec.exe `
+            -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" `
+            -Wait
+
+          Remove-Item $installerPath -Force
+
+      - name: Connect Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          & $tailscale up `
+            --authkey="$env:TAILSCALE_AUTH_KEY" `
+            --hostname="gh-runner-$env:GITHUB_RUN_ID"
+
+          Start-Sleep -Seconds 5
+
+          $tsIP = & $tailscale ip -4
+
+          Write-Host "Tailscale IP: $tsIP"
+          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Display RDP Information
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "       RDP INFORMATION"
+          Write-Host "=============================="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: $env:RDP_USER"
+          Write-Host "Password: $env:RDP_PASSWORD"
+          Write-Host "=============================="
+          Write-Host ""
